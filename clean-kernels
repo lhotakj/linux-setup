@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+#
+# clean-kernels — Remove old/unused kernels, keeping the active one
+# Includes: kernel detection, safe removal, apt autoremove
+#
+# Usage:
+#   ./clean-kernels                 # normal mode
+#   ./clean-kernels --dry-run       # dry run (alias: --dryrun | -d)
+#
+#   wget -qO- https://raw.githubusercontent.com/lhotakj/linux-setup/main/clean-kernels | bash
+#   wget -qO- https://raw.githubusercontent.com/lhotakj/linux-setup/main/clean-kernels | bash -s -- --dry-run
+#
+
+set -euo pipefail
+
+# -----------------------------
+# Argument parsing
+# -----------------------------
+
+DRY_RUN=0
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run|--dryrun|-d) DRY_RUN=1 ;;
+        *) echo "Unknown argument: $arg"; exit 1 ;;
+    esac
+done
+
+# -----------------------------
+# Helpers
+# -----------------------------
+
+info() {
+    printf "\033[0;32m[INFO]\033[0m %s\n" "$1"
+}
+
+debug() {
+    printf "\033[0;90m[DEBUG]\033[0m %s\n" "$1"
+}
+
+error() {
+    printf "\033[0;31m[ERROR]\033[0m %s\n" "$1"
+}
+
+run() {
+    if [[ "${DRY_RUN}" == "1" ]]; then
+        echo "[DRY RUN] $*"
+    else
+        echo "[RUN] $*"
+        eval "$@"
+    fi
+}
+
+confirm() {
+    read -r -p "Proceed with kernel cleanup? [y/N] " ans
+    [[ "$ans" == "y" || "$ans" == "Y" ]]
+}
+
+# -----------------------------
+# Kernel Cleanup
+# -----------------------------
+
+kernel_cleanup() {
+    echo "=== Kernel cleanup ==="
+
+    local current_kernel
+    current_kernel=$(uname -r)
+    info "Currently active kernel: $current_kernel"
+
+    local installed_kernels
+    installed_kernels=$(dpkg --list | grep linux-image | awk '{print $2}')
+    info "Installed kernels:"
+    echo "$installed_kernels"
+
+    for kernel in $installed_kernels; do
+        if [[ "$kernel" != *"$current_kernel"* ]]; then
+            info "Removing kernel: $kernel"
+            run "sudo apt remove --purge -y \"$kernel\""
+        else
+            debug "Skipping active kernel: $kernel"
+        fi
+    done
+}
+
+autoremove() {
+    echo "=== Dependency cleanup ==="
+    run "sudo apt autoremove -y"
+}
+
+# -----------------------------
+# Main
+# -----------------------------
+
+info "Kernel Cleanup Script"
+info "Dry run: ${DRY_RUN}"
+
+if ! confirm; then
+    info "Aborted."
+    exit 1
+fi
+
+kernel_cleanup
+autoremove
+
+info "Kernel cleanup complete."

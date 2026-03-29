@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+#
+# bootstrap — Initial system setup for Ubuntu
+# Includes: package installation, SSH configuration, sudo group setup
+#
+# Usage:
+#   ./bootstrap                     # normal mode
+#   ./bootstrap --dry-run           # dry run (alias: --dryrun | -d)
+#
+#   wget -qO- https://raw.githubusercontent.com/lhotakj/linux-setup/main/bootstrap | bash
+#   wget -qO- https://raw.githubusercontent.com/lhotakj/linux-setup/main/bootstrap | bash -s -- --dry-run
+#
+
+set -euo pipefail
+
+# -----------------------------
+# Argument parsing
+# -----------------------------
+
+DRY_RUN=0
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run|--dryrun|-d) DRY_RUN=1 ;;
+        *) echo "Unknown argument: $arg"; exit 1 ;;
+    esac
+done
+
+# -----------------------------
+# Helpers
+# -----------------------------
+
+info() {
+    printf "\033[0;32m[INFO]\033[0m %s\n" "$1"
+}
+
+debug() {
+    printf "\033[0;90m[DEBUG]\033[0m %s\n" "$1"
+}
+
+error() {
+    printf "\033[0;31m[ERROR]\033[0m %s\n" "$1"
+}
+
+run() {
+    if [[ "${DRY_RUN}" == "1" ]]; then
+        echo "[DRY RUN] $*"
+    else
+        echo "[RUN] $*"
+        eval "$@"
+    fi
+}
+
+confirm() {
+    read -r -p "Proceed with system initialisation? [y/N] " ans
+    [[ "$ans" == "y" || "$ans" == "Y" ]]
+}
+
+# -----------------------------
+# Setup Functions
+# -----------------------------
+
+update_packages() {
+    echo "=== Package list update ==="
+    run "sudo apt-get update -y"
+}
+
+install_packages() {
+    echo "=== Package installation ==="
+    local packages=("openssh-server" "mc" "git" "curl" "wget" "htop")
+
+    for pkg in "${packages[@]}"; do
+        if dpkg -s "$pkg" >/dev/null 2>&1; then
+            debug "Package '$pkg' already installed — skipping"
+        else
+            info "Installing package: $pkg"
+            run "sudo apt-get install -y $pkg"
+        fi
+    done
+}
+
+configure_sshd() {
+    echo "=== SSHD configuration ==="
+    local sshd_config="/etc/ssh/sshd_config"
+
+    info "Setting PasswordAuthentication yes"
+    run "sudo sed -i '/^PasswordAuthentication/d' $sshd_config"
+    run "sudo bash -c \"echo 'PasswordAuthentication yes' >> $sshd_config\""
+
+    info "Setting PermitRootLogin yes"
+    run "sudo sed -i '/^PermitRootLogin/d' $sshd_config"
+    run "sudo bash -c \"echo 'PermitRootLogin yes' >> $sshd_config\""
+
+    info "Setting SSH Port 22"
+    run "sudo sed -i '/^Port /d' $sshd_config"
+    run "sudo bash -c \"echo 'Port 22' >> $sshd_config\""
+}
+
+enable_ssh() {
+    echo "=== SSH service ==="
+    info "Enabling SSH service"
+    run "sudo systemctl enable ssh"
+
+    info "Restarting SSH service"
+    run "sudo systemctl restart ssh"
+}
+
+configure_sudo() {
+    echo "=== Sudo group ==="
+    local current_user="$1"
+
+    if id -nG "$current_user" | grep -qw "sudo"; then
+        debug "User '$current_user' is already in sudo group"
+    else
+        info "Adding '$current_user' to sudo group"
+        run "sudo usermod -aG sudo $current_user"
+    fi
+}
+
+# -----------------------------
+# Main
+# -----------------------------
+
+CURRENT_USER="$(logname 2>/dev/null || echo "$USER")"
+
+info "Bootstrap — System Init Script"
+info "Dry run: ${DRY_RUN}"
+info "Detected current user: $CURRENT_USER"
+
+if ! confirm; then
+    info "Aborted."
+    exit 1
+fi
+
+update_packages
+install_packages
+configure_sshd
+enable_ssh
+configure_sudo "$CURRENT_USER"
+
+info "Bootstrap completed successfully."

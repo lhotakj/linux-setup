@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+#
+# system-clean — Comprehensive system cleanup for Ubuntu
+# Includes: apt, snap, logs, caches, thumbnails, Docker leftovers
+#
+# Usage:
+#   ./system-clean                  # normal mode
+#   ./system-clean --dry-run        # dry run (alias: --dryrun | -d)
+#
+#   wget -qO- https://raw.githubusercontent.com/lhotakj/linux-setup/main/system-clean | bash
+#   wget -qO- https://raw.githubusercontent.com/lhotakj/linux-setup/main/system-clean | bash -s -- --dry-run
+#
+
+set -euo pipefail
+
+# -----------------------------
+# Argument parsing
+# -----------------------------
+
+DRY_RUN=0
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run|--dryrun|-d) DRY_RUN=1 ;;
+        *) echo "Unknown argument: $arg"; exit 1 ;;
+    esac
+done
+
+# -----------------------------
+# Helpers
+# -----------------------------
+
+info() {
+    printf "\033[0;32m[INFO]\033[0m %s\n" "$1"
+}
+
+debug() {
+    printf "\033[0;90m[DEBUG]\033[0m %s\n" "$1"
+}
+
+error() {
+    printf "\033[0;31m[ERROR]\033[0m %s\n" "$1"
+}
+
+run() {
+    if [[ "${DRY_RUN}" == "1" ]]; then
+        echo "[DRY RUN] $*"
+    else
+        echo "[RUN] $*"
+        eval "$@"
+    fi
+}
+
+confirm() {
+    read -r -p "Proceed with cleanup? [y/N] " ans
+    [[ "$ans" == "y" || "$ans" == "Y" ]]
+}
+
+# -----------------------------
+# Cleanup Functions
+# -----------------------------
+
+apt_cleanup() {
+    echo "=== APT cleanup ==="
+    run "sudo apt update"
+    run "sudo apt autoremove --purge -y"
+    run "sudo apt autoclean -y"
+    run "sudo apt clean -y"
+}
+
+snap_cleanup() {
+    echo "=== Snap cleanup ==="
+    run "set -o pipefail; snap list --all | awk '/disabled/{print \$1, \$3}' | while read snapname revision; do sudo snap remove \"\$snapname\" --revision=\"\$revision\"; done"
+}
+
+journal_cleanup() {
+    echo "=== Systemd journal cleanup ==="
+    run "sudo journalctl --vacuum-size=100M"
+}
+
+log_cleanup() {
+    echo "=== Log cleanup ==="
+    run "sudo find /var/log -type f -name '*.gz' -delete"
+    run "sudo find /var/log -type f -name '*.1' -delete"
+    run "sudo truncate -s 0 /var/log/*.log"
+}
+
+cache_cleanup() {
+    echo "=== Cache cleanup ==="
+    run "rm -rf ~/.cache/*"
+    run "sudo rm -rf /var/cache/*"
+}
+
+thumbnail_cleanup() {
+    echo "=== Thumbnail cleanup ==="
+    run "rm -rf ~/.cache/thumbnails/*"
+}
+
+docker_cleanup() {
+    echo "=== Docker cleanup ==="
+    run "docker container prune -f"
+    run "docker image prune -a -f"
+    run "docker volume prune -f"
+    run "docker network prune -f"
+    run "docker builder prune -a -f"
+}
+
+orphaned_packages() {
+    echo "=== Orphaned package cleanup ==="
+    run "sudo deborphan | xargs -r sudo apt purge -y"
+}
+
+flatpak_cleanup() {
+    if command -v flatpak >/dev/null; then
+        echo "=== Flatpak cleanup ==="
+        run "flatpak uninstall --unused -y"
+    fi
+}
+
+# -----------------------------
+# Main
+# -----------------------------
+
+info "Ubuntu System Cleanup"
+info "Dry run: ${DRY_RUN}"
+
+if ! confirm; then
+    info "Aborted."
+    exit 1
+fi
+
+apt_cleanup
+snap_cleanup
+journal_cleanup
+log_cleanup
+cache_cleanup
+thumbnail_cleanup
+docker_cleanup
+orphaned_packages
+flatpak_cleanup
+
+info "Cleanup complete."

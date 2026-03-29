@@ -1,0 +1,289 @@
+#!/usr/bin/env bash
+#
+# install-docker — Install Docker CE and Docker Compose on Ubuntu
+# Includes: old Docker removal, repo setup, WSL2 detection, user group setup,
+#           dynamic Docker Compose version from GitHub, post-install verification
+#
+# Idempotent: safe to run multiple times — already-complete steps are skipped.
+#
+# Usage:
+#   ./install-docker                # normal mode
+#   ./install-docker --dry-run      # dry run (alias: --dryrun | -d)
+#
+#   wget -qO- https://raw.githubusercontent.com/lhotakj/linux-setup/main/install-docker | bash
+#   wget -qO- https://raw.githubusercontent.com/lhotakj/linux-setup/main/install-docker | bash -s -- --dry-run
+#
+
+set -euo pipefail
+
+# -----------------------------
+# Argument parsing
+# -----------------------------
+
+DRY_RUN=0
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run|--dryrun|-d) DRY_RUN=1 ;;
+        *) echo "Unknown argument: $arg"; exit 1 ;;
+    esac
+done
+
+# -----------------------------
+# Helpers
+# -----------------------------
+
+info() {
+    printf "\033[0;32m[INFO]\033[0m %s\n" "$1"
+}
+
+debug() {
+    printf "\033[0;90m[DEBUG]\033[0m %s\n" "$1"
+}
+
+error() {
+    printf "\033[0;31m[ERROR]\033[0m %s\n" "$1"
+}
+
+run() {
+    if [[ "${DRY_RUN}" == "1" ]]; then
+        echo "[DRY RUN] $*"
+    else
+        echo "[RUN] $*"
+        eval "$@"
+    fi
+}
+
+confirm() {
+    read -r -p "Proceed with Docker installation? [y/N] " ans
+    [[ "$ans" == "y" || "$ans" == "Y" ]]
+}
+
+# -----------------------------
+# Install Functions
+# -----------------------------
+
+detect_wsl() {
+    echo "=== Environment detection ==="
+    if [[ "$(uname -r)" == *"microsoft"* ]]; then
+        debug "WSL environment detected — extra setup will be applied"
+        IS_WSL=1
+    else
+        debug "Standard Linux environment detected"
+        IS_WSL=0
+    fi
+}
+
+fetch_compose_version() {
+    echo "=== Docker Compose version ==="
+    info "Fetching latest Docker Compose version from GitHub..."
+    DC_VERSION=$(curl -fsSL "https://api.github.com/repos/docker/compose/releases/latest" \
+        | grep '"tag_name"' \
+        | sed -E 's/.*"v([^"]+)".*/\1/')
+    info "Latest Docker Compose version: $DC_VERSION"
+}
+
+purge_repo_conflicts() {
+    echo "=== Purge conflicting Docker repo files ==="
+    local stale_keyrings=(
+        "/usr/share/keyrings/docker-archive-keyring.gpg"
+        "/usr/share/keyrings/docker.gpg"
+    )
+    local stale_sources=(
+        "/etc/apt/sources.list.d/docker-ce.list"
+        "/etc/apt/sources.list.d/download_docker_com_linux_ubuntu.list"
+    )
+
+    for f in "${stale_keyrings[@]}"; do
+        if [[ -f "$f" ]]; then
+            debug "Removing stale keyring: $f"
+            run "sudo rm -f \"$f\""
+        fi
+    done
+
+    for f in "${stale_sources[@]}"; do
+        if [[ -f "$f" ]]; then
+            debug "Removing stale source list: $f"
+            run "sudo rm -f \"$f\""
+        fi
+    done
+}
+
+remove_old_docker() {
+    echo "=== Remove old Docker packages ==="
+    local legacy_pkgs=("docker" "docker-engine" "docker.io" "containerd" "runc")
+    local to_remove=()
+
+    for pkg in "${legacy_pkgs[@]}"; do
+        if dpkg -s "$pkg" >/dev/null 2>&1; then
+            to_remove+=("$pkg")
+        else
+            debug "Legacy package '$pkg' not installed — skipping"
+        fi
+    done
+
+    if [[ ${#to_remove[@]} -gt 0 ]]; then
+        run "sudo apt-get remove -y ${to_remove[*]}"
+    else
+        debug "No legacy Docker packages found"
+    fi
+}
+
+setup_repo() {
+    echo "=== Repository setup ==="
+    local keyring="/etc/apt/keyrings/docker.gpg"
+    local sources_list="/etc/apt/sources.list.d/docker.list"
+
+    info "Installing prerequisites"
+    run "sudo apt-get update -y -qq"
+    run "sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release"
+
+    if [[ -f "$keyring" ]]; then
+        debug "Docker GPG keyring already exists at $keyring — skipping"
+    else
+        info "Adding Docker GPG key to $keyring"
+        run "sudo install -m 0755 -d /etc/apt/keyrings"
+        run "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor --yes -o \"$keyring\""
+        run "sudo chmod a+r \"$keyring\""
+    fi
+
+    if [[ -f "$sources_list" ]]; then
+        debug "Docker repository already configured at $sources_list — skipping"
+    else
+        info "Adding Docker repository"
+        run "echo \"deb [arch=\$(dpkg --print-architecture) signed-by=${keyring}] https://download.docker.com/linux/ubuntu \$(lsb_release -cs) stable\" | sudo tee \"$sources_list\" > /dev/null"
+        info "Updating package lists with Docker repo"
+        run "sudo apt-get update -y -qq"
+    fi
+}
+
+install_docker() {
+    echo "=== Docker CE installation ==="
+    local pkgs=("docker-ce" "docker-ce-cli" "containerd.io")
+    local to_install=()
+
+    for pkg in "${pkgs[@]}"; do
+        if dpkg -s "$pkg" >/dev/null 2>&1; then
+            debug "Package '$pkg' already installed — skipping"
+        else
+            to_install+=("$pkg")
+        fi
+    done
+
+    if [[ ${#to_install[@]} -gt 0 ]]; then
+        info "Installing: ${to_install[*]}"
+        run "sudo apt-get install -y ${to_install[*]}"
+    else
+        debug "Docker CE already installed — skipping"
+    fi
+}
+
+configure_user() {
+    echo "=== User configuration ==="
+    if id -nG "$USER" | grep -qw "docker"; then
+        debug "User '$USER' is already in docker group — skipping"
+    else
+        info "Adding $USER to docker group"
+        run "sudo usermod -aG docker $USER"
+    fi
+}
+
+setup_wsl() {
+    echo "=== WSL2 setup ==="
+    if ! dpkg -s cgroupfs-mount >/dev/null 2>&1; then
+        info "Installing cgroupfs-mount"
+        run "sudo apt-get install -y cgroupfs-mount"
+    else
+        debug "cgroupfs-mount already installed — skipping"
+    fi
+    info "Mounting cgroupfs"
+    run "sudo cgroupfs-mount"
+}
+
+enable_docker_service() {
+    echo "=== Docker service ==="
+    if ! systemctl is-active --quiet docker; then
+        info "Starting Docker service"
+        run "sudo service docker start"
+    else
+        debug "Docker service already running — skipping start"
+    fi
+
+    if ! systemctl is-enabled --quiet docker; then
+        info "Enabling Docker service on startup"
+        run "sudo systemctl enable docker"
+    else
+        debug "Docker service already enabled — skipping"
+    fi
+}
+
+test_docker() {
+    echo "=== Post-install test ==="
+    info "Running hello-world container"
+    run "docker run hello-world"
+}
+
+install_compose() {
+    echo "=== Docker Compose installation ==="
+    local target="/usr/local/bin/docker-compose"
+    local current_version=""
+
+    if [[ -x "$target" ]]; then
+        current_version=$("$target" version --short 2>/dev/null || true)
+    fi
+
+    if [[ "$current_version" == "$DC_VERSION" ]]; then
+        debug "Docker Compose v${DC_VERSION} already installed — skipping"
+    else
+        info "Downloading Docker Compose v${DC_VERSION} (current: ${current_version:-none})"
+        run "sudo curl -fsSL https://github.com/docker/compose/releases/download/v${DC_VERSION}/docker-compose-linux-x86_64 -o \"$target\""
+        run "sudo chmod +x \"$target\""
+    fi
+}
+
+cleanup_docker_images() {
+    echo "=== Post-install cleanup ==="
+    info "Removing test images and pruning system"
+    run "docker rmi -f \$(docker images -aq) 2>/dev/null || true"
+    run "docker system prune -f"
+    run "docker volume rm \$(docker volume ls -qf dangling=true) 2>/dev/null || true"
+}
+
+print_versions() {
+    echo "=== Installed versions ==="
+    info "Docker:         $(docker --version 2>/dev/null || echo 'n/a')"
+    info "Docker Compose: $(docker-compose --version 2>/dev/null || echo 'n/a')"
+}
+
+# -----------------------------
+# Main
+# -----------------------------
+
+info "Docker & Docker Compose Installer"
+info "Dry run: ${DRY_RUN}"
+
+detect_wsl
+fetch_compose_version
+
+if ! confirm; then
+    info "Aborted."
+    exit 1
+fi
+
+purge_repo_conflicts
+remove_old_docker
+setup_repo
+install_docker
+configure_user
+
+if [[ "${IS_WSL}" == "1" ]]; then
+    setup_wsl
+fi
+
+enable_docker_service
+test_docker
+install_compose
+cleanup_docker_images
+print_versions
+
+info "Docker installation completed successfully."
+
