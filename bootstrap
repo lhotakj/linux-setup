@@ -51,6 +51,10 @@ run() {
 }
 
 confirm() {
+    if [ ! -t 0 ]; then
+        debug "Non-interactive mode detected — skipping confirmation"
+        return 0
+    fi
     read -r -p "Proceed with system initialisation? [y/N] " ans
     [[ "$ans" == "y" || "$ans" == "Y" ]]
 }
