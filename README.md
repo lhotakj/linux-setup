@@ -16,6 +16,11 @@ All scripts support a `--dry-run` flag (aliases: `--dryrun`, `-d`) to preview ac
 
 ## Scripts
 
+All the scripts require `wget` to be installed. Run first
+```bash
+sudo apt update -y -q && sudo apt install wget -y -q
+```
+
 ### `bootstrap`
 Initial system setup — installs common packages, configures SSH and adds the current user to the sudo group.
 
